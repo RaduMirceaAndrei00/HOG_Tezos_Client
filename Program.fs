@@ -1,4 +1,4 @@
-﻿module HOG.Tezos.Client
+module HOG.Tezos.Client
 open System
 open System.Collections.Generic
 open System.Net.Http
@@ -77,6 +77,8 @@ module hogRequests =
         
         member this.call (contract_address:string) (function_name:string) (arguments:'a) = this.post_request<(string * string * 'a), Result<string,string>> "contract" (contract_address, function_name, arguments)
         
+        member this.send_tez (to_: string) (amount: int) = this.post_request<{|to_: string; amount: int|}, Result<string,string>> "send_tez" {|to_ = to_; amount = amount|}
+        
         member this.post_ah_offer contract_address pubh (start_:DateTime) (end_:DateTime) (token_id:int, quantity:int) product =
             this.call contract_address "post" [{| start_ = start_.ToUniversalTime(); end_ = end_.ToUniversalTime(); price = tezos_tuple ["";pubh; string token_id; string quantity]; seller = pubh; product = product |> List.map (List.map (fun (a,b,c) -> tezos_tuple[a;b;c]))|}]
         
@@ -96,17 +98,29 @@ module hogRequests =
         member this.get_token_proposals  (map_id:string) = this.post_request<{|map_id: string|}, (string * (TokenProposal list)) list> "get_token_proposals" {|map_id = map_id|} |>> Map.ofList  
         
         member this.get_balance (pub_hash:string) =
-            this.get_request<{|spendable_balance: float|}, float> $"https://api.florence.tzstats.com/explorer/account/%s{pub_hash}"
-                (fun res -> res.spendable_balance)
+            this.get_request<float, float> $"https://api.florencenet.tzkt.io/v1/accounts/%s{pub_hash}/balance"
+                (fun res -> res / 1000000.0)
                 (konst -1.)
         
         member this.get_auction_house_offers (map_id:string) =
-            this.get_request<{|key: string; value: {|end_: DateTime; price: Dictionary<int, string>; product: Dictionary<int, int> list list; seller: string;start_: DateTime|}|} list, Map<string, AuctionOffer>> $"https://api.florence.tzstats.com/explorer/bigmap/%s{map_id}/values"
+            this.get_request<{|key: string; value: {|end_: DateTime; price: Dictionary<string, string>; product: Dictionary<string, int> list list; seller: string;start_: DateTime|}|} list, Map<string, AuctionOffer>> $"https://api.florencenet.tzkt.io/v1/bigmaps/%s{map_id}/keys?select=key,value"
                 (List.map (fun res ->
                     (res.key, {
                         end_ = (res.value.end_).ToUniversalTime()
-                        price = (res.value.price.[0], int res.value.price.[1], int res.value.price.[2])
-                        product = res.value.product |> List.map (List.map (fun dict -> (dict.[0], dict.[1], dict.[2]))) 
+                        price = (res.value.price.["address"], int res.value.price.["nat_0"], int res.value.price.["nat_1"])
+                        product = res.value.product |> List.map (List.map (fun dict -> (dict.["nat_0"], dict.["nat_1"], dict.["nat_2"]))) 
+                        seller = res.value.seller
+                        start_ = (res.value.start_).ToUniversalTime()
+                        }
+                ))>> Map.ofList)
+                (konst Map.empty)
+        member this.get_my_auction_house_offers (pub_hash: string) (map_id:string) =
+            this.get_request<{|key: string; value: {|end_: DateTime; price: Dictionary<string, string>; product: Dictionary<string, int> list list; seller: string;start_: DateTime|}|} list, Map<string, AuctionOffer>> $"https://api.florencenet.tzkt.io/v1/bigmaps/%s{map_id}/keys?value.seller=%s{pub_hash}&select=key,value"
+                (List.map (fun res ->
+                    (res.key, {
+                        end_ = (res.value.end_).ToUniversalTime()
+                        price = (res.value.price.["address"], int res.value.price.["nat_0"], int res.value.price.["nat_1"])
+                        product = res.value.product |> List.map (List.map (fun dict -> (dict.["nat_0"], dict.["nat_1"], dict.["nat_2"]))) 
                         seller = res.value.seller
                         start_ = (res.value.start_).ToUniversalTime()
                         }
@@ -114,18 +128,23 @@ module hogRequests =
                 (konst Map.empty)
         
         member this.get_ledger (map_id: string) =
-            this.get_request<{|key:Dictionary<int, string>; value:int|} list, Map<(string* int), int>> $"https://api.florence.tzstats.com/explorer/bigmap/%s{map_id}/values"
-                (List.map (fun res -> ((res.key.[0], int res.key.[1]), res.value)) >> Map.ofList)
+            this.get_request<{|key:Dictionary<string, string>; value:int|} list, Map<(string* int), int>> $"https://api.florencenet.tzkt.io/v1/bigmaps/%s{map_id}/keys?select=key,value"
+                (List.map (fun res -> ((res.key.["address"], int res.key.["nat"]), res.value)) >> Map.ofList)
                 (konst Map.empty)
         
-        member this.get_fa2_quantity (map_id:string) (address:string) (token_id:int) =
-            this.get_request<{|key:Dictionary<int, string>; value:int|}, int> $"https://api.florence.tzstats.com/explorer/bigmap/%s{map_id}/%s{address},%d{token_id}"
-                (fun res -> res.value)
+        member this.get_my_ledger (pub_hash: string) (map_id: string) =
+            this.get_request<{|key:Dictionary<string, string>; value:int|} list, Map<(string* int), int>> $"https://api.florencenet.tzkt.io/v1/bigmaps/%s{map_id}/keys?key.address=%s{pub_hash}&select=key,value"
+                (List.map (fun res -> ((res.key.["address"], int res.key.["nat"]), res.value)) >> Map.ofList)
+                (konst Map.empty)
+        
+        member this.get_fa2_quantity (map_id:string) (pub_hash:string) (token_id:int) =
+            this.get_request<int list, int> $"https://api.florencenet.tzkt.io/v1/bigmaps/%s{map_id}/keys?key.address=%s{pub_hash}&key.nat=%d{token_id}&select=value"
+                (head)
                 (konst 0)
                 
         member this.get_fa2_quantities (map_id:string) (l:(string * int) list) =
             l |>> (fun (a,b) -> this.get_fa2_quantity map_id a b) |> List.toSeq |> Async.Sequential |>> List.ofArray
-
 [<EntryPoint>]
 let main argv =
+    
     0
